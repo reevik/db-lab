@@ -8,8 +8,13 @@ use std::ops::{Add, Mul, Sub};
 pub(crate) struct OffsetType<T>(pub T);
 
 impl OffsetType<u16> {
-    fn of(value: i32) -> o16 {
-        OffsetType(value.try_into().unwrap())
+
+    pub(crate) fn get(&self,) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) fn from_u16(i: u16) -> Self {
+        OffsetType(i)
     }
 }
 
@@ -77,6 +82,24 @@ impl Add<i32> for o16 {
     fn add(self, rhs: i32) -> Self::Output {
         let right_value: u16 = rhs.try_into().expect("overflow");
         OffsetType::<u16>(self.0 + right_value)
+    }
+}
+
+impl Add<usize> for o16 {
+    type Output = o16;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        let rhs_u16: u16 = rhs.try_into().expect("rhs exceeds u16::MAX");
+        OffsetType::<u16>(self.0.checked_add(rhs_u16).expect("overflow"))
+    }
+}
+
+impl Mul<usize> for o16 {
+    type Output = o16;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        let rhs_u16: u16 = rhs.try_into().expect("rhs exceeds u16::MAX");
+        o16(rhs_u16.checked_mul(self.0).expect("overflow"))
     }
 }
 
@@ -163,9 +186,17 @@ pub(crate) struct Payload {
     pub payload_type: PayloadType,
 }
 
+fn stringify(data: Vec<u8>) -> String {
+    String::from_utf8_lossy(data.as_slice()).to_string()
+}
+
 impl Payload {
     pub(crate) fn to_bytes(&self) -> &Vec<u8> {
         &self.buffer
+    }
+
+    pub(crate) fn to_str(&self) -> String {
+        stringify(self.buffer.clone())
     }
 
     /// Converts a String object into a Payload instance.
