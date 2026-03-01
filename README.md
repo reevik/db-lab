@@ -1,10 +1,19 @@
-teleport
+Teleport DB
 ----
 
-Implementation of slotted page.
-Slotted pages are used to store buffers to a disk in pages.
+An experimental B-tree based nosql database. Its purpose is solely educational and to verify some ideas. Feel free to use for your own purpose and contribute.
 
-### What is this project about:
-* It is not a production code.
-* The implementation remains consistent with a single thread.
-* Its purpose is solely educational.
+<table>
+    <tr><td>Status</td><td>Experimental. Non-production use only.</td></tr>
+</table>
+
+## Project Stages
+* Implementation of slotted-pages
+* Implementation of B+Tree.
+* Write-ahead log.
+* Data sharding.
+* Consensus algorithm.
+* Data consistency levels.
+* Query parser.
+* Page compaction.
+* Optimized disk I/O. 
