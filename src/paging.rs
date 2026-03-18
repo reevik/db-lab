@@ -2,7 +2,7 @@ use crate::errors::InvalidPageOffsetError;
 use crate::io;
 use crate::io::delete_index;
 use crate::types::PayloadType::Str;
-use crate::types::{Offset, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
+use crate::types::{FromLeBytes, Key, Offset, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use rand::Rng;
 use std::cmp::min;
@@ -31,9 +31,11 @@ const S_PARENT_PAGE_ID: usize = size_of::<Offset>();
 const S_FREE_START: usize = size_of::<Offset>();
 const S_FREE_END: usize = size_of::<Offset>();
 const S_SLOT_TABLE_ITEM: usize = size_of::<Offset>();
-
+const S_DATA_TYPE: usize = size_of::<u8>();
 // Size of offset reference.
 const S_OFFSET: usize = size_of::<Offset>();
+// What we can address with an offset in a page, the data length is bound to it.
+const S_DATA_LENGTH: usize = S_OFFSET;
 
 pub const TOTAL_HEADER_SIZE: usize = S_FLAGS
     + S_RIGHT_SIBLING
@@ -46,17 +48,12 @@ pub const TOTAL_HEADER_SIZE: usize = S_FLAGS
     + S_FREE_START
     + S_FREE_END;
 
-pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize =
-    SINGLE_SLOT_HEADER_SIZE + S_SLOT_TABLE_ITEM;
+/// Slot structure as follows:
+/// slot offset[0] → | payload size | payload type | key size | key type | overflow ref | key | payload
+pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + S_SLOT_TABLE_ITEM;
+pub const SINGLE_SLOT_HEADER_SIZE: usize = 1 * S_PAGE_ID + 2 * S_DATA_LENGTH + 2 * S_DATA_TYPE;
 
-// 1x key size
-// 1x payload size
-// 1x overflow page ref.
-// key type
-// payload type.
-pub const SINGLE_SLOT_HEADER_SIZE: usize = 3 * S_OFFSET + 2 * S_PAGE_TYPE;
-
-/// Offsets in the
+/// Offsets in a page header.
 const OFFSET_NUM_OF_SLOTS: usize = 0;
 const OFFSET_PAGE_ID: usize = OFFSET_NUM_OF_SLOTS + S_NUM_OF_SLOTS;
 const OFFSET_PAGE_TYPE: usize = OFFSET_PAGE_ID + S_PAGE_ID;
@@ -150,6 +147,8 @@ impl Page {
     }
 
     // Adds data into a leaf node.
+    // For each key, payload pair the following header metadata required:
+    // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload
     fn add_key_data(
         &mut self,
         key: Key,
@@ -163,8 +162,7 @@ impl Page {
         let payload_type = payload_ref.payload_type;
         let key_buf_type: PayloadType = Str;
 
-        // For each key, payload pair the following header metadata required:
-        // | slot offset | ----> | payload size | payload type | key size | key type | overflow ref | key | payload
+
         let slots_available = self.slots_available()?;
         if slots_available == 0 {
             panic!("No slot left!");
@@ -172,11 +170,11 @@ impl Page {
 
         let available_net_free_space_for_payload = self.available_space_for_payload(key_buf_size);
         // consume the payload for available net space or payload size if it is smaller than available net space.
-        let mut read_buf = vec![0; min(available_net_free_space_for_payload?, payload_size)];
-        let _ = payload.read(&mut read_buf);
+        let mut payload_buf = vec![0; min(available_net_free_space_for_payload?, payload_size)];
+        let _ = payload.read(&mut payload_buf);
         let mut slot: Vec<u8> =
             Vec::with_capacity(Self::slot_size(key_buf_size, payload_size).try_into()?);
-        let payload_size_in_offset: Offset = read_buf.len().try_into()?;
+        let payload_size_in_offset: Offset = payload_buf.len().try_into()?;
         let key_buf_size_in_offset: Offset = key_buf_size.try_into()?;
         let overflow_page_id = if payload.len() > 0 {
             next_page()
@@ -189,7 +187,7 @@ impl Page {
         slot.extend_from_slice(&[key_buf_type as u8]);
         slot.extend_from_slice(&overflow_page_id.to_bytes());
         slot.extend_from_slice(key_buf.as_slice());
-        slot.extend_from_slice(&read_buf);
+        slot.extend_from_slice(&payload_buf);
 
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
@@ -242,12 +240,14 @@ impl Page {
             Offset::from_bytes,
         );
 
-        let slot_offset_usize: usize = slot_offset.try_into()?;
-        let payload_size_offset = slot_offset_usize + S_PAGE_ID;
-        let payload_len =
-            Self::read_le::<Offset, S_PAGE_ID>(&self.buffer, payload_size_offset, Offset::from_bytes);
+        let payload_size_offset = slot_offset.get() + S_OFFSET;
+        let payload_len = Self::read_le::<Offset, S_OFFSET>(
+            &self.buffer,
+            payload_size_offset,
+            Offset::from_bytes,
+        );
 
-        let payload_offset = payload_size_offset + S_PAGE_ID;
+        let payload_offset = payload_size_offset + S_OFFSET;
         let payload: Vec<u8> = Self::read_le_into_buffer::<Vec<u8>>(
             &self.buffer,
             payload_offset,
@@ -257,6 +257,9 @@ impl Page {
 
         Ok((payload, next_overflow))
     }
+
+    /// Overflow page structure as follows:
+    /// next_page_id | payload_size | payload.
     fn add_overflow_data(
         &mut self,
         mut payload: Payload,
@@ -268,7 +271,7 @@ impl Page {
         let copy_size = min(payload.len(), max_available_payload_size);
         let mut payload_in_bytes: Vec<u8> = vec![0; copy_size];
         let _ = payload.read(&mut payload_in_bytes);
-        let copy_size_offset: Offset = copy_size.try_into().expect("Too many pages");
+        let payload_size: Offset = copy_size.try_into().expect("Too many pages");
         let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
         let next_page_id = if payload.len() > 0 {
             next_page()
@@ -276,7 +279,7 @@ impl Page {
             Offset(0)
         };
         slot.extend_from_slice(&next_page_id.to_bytes());
-        slot.extend_from_slice(&copy_size_offset.to_bytes());
+        slot.extend_from_slice(&payload_size.to_bytes());
         slot.extend_from_slice(&payload_in_bytes);
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
@@ -284,8 +287,10 @@ impl Page {
         Ok((payload, next_page_id))
     }
 
+
+    /// slot offset[0] → next_page_id | payload_size | payload
     fn max_available_payload_size_in_overflow_page(&self) -> Offset {
-        self.free_size() - 3 * S_SLOT_TABLE_ITEM
+        self.free_size() - S_SLOT_TABLE_ITEM - S_DATA_LENGTH - S_PAGE_ID
     }
 
     fn slot_size(key_len: usize, payload_len: usize) -> Offset {
@@ -326,32 +331,29 @@ impl Page {
 
     fn get_key_payload(&self, index: Offset) -> Result<String, InvalidPageOffsetError> {
         let index_usize: usize = index.try_into()?;
-        let offset_size: usize = size_of::<Offset>();
-        let offset_index = TOTAL_HEADER_SIZE + (index_usize * offset_size);
-        let slot_offset = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
+        let offset_index = TOTAL_HEADER_SIZE + (index_usize * S_SLOT_TABLE_ITEM);
+        let slot_offset = Self::read_le::<Offset, S_OFFSET>(
             &self.buffer,
             offset_index,
             Offset::from_bytes,
         );
-        let payload_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
+        let payload_len = Self::read_le::<Offset, S_DATA_LENGTH>(
             &self.buffer,
             slot_offset.try_into()?,
             Offset::from_bytes,
         );
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let page_type_size: usize = S_PAGE_ID;
-        let payload_type_offset = slot_offset_usize + page_type_size;
-        let payload_type =
-            Self::read_le::<u8, S_FLAGS>(&self.buffer, payload_type_offset, u8::from_bytes);
-        let key_len_offset = payload_type_offset + S_FLAGS;
-        let key_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
+        let payload_type_offset = slot_offset_usize + S_DATA_LENGTH;
+        let payload_type = Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
+        let key_len_offset = payload_type_offset + S_DATA_TYPE;
+        let key_len = Self::read_le::<Offset, S_DATA_LENGTH>(
             &self.buffer,
             key_len_offset,
             Offset::from_bytes,
         );
-        let key_type_offset = key_len_offset + S_PAGE_ID;
-        let overflow_page_ref_offset = key_type_offset + S_FLAGS;
-        let overflow_page_ref = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
+        let key_type_offset = key_len_offset + S_DATA_LENGTH;
+        let overflow_page_ref_offset = key_type_offset + S_DATA_TYPE;
+        let overflow_page_ref = Self::read_le::<Offset, S_PAGE_ID>(
             &self.buffer,
             overflow_page_ref_offset,
             Offset::from_bytes,
@@ -436,7 +438,11 @@ impl Page {
 
     /// Returns the number of slots from the first two bytes in the page.
     fn num_of_slots(&self) -> Offset {
-        Self::read_le::<Offset, S_NUM_OF_SLOTS>(&self.buffer, OFFSET_NUM_OF_SLOTS, Offset::from_bytes)
+        Self::read_le::<Offset, S_NUM_OF_SLOTS>(
+            &self.buffer,
+            OFFSET_NUM_OF_SLOTS,
+            Offset::from_bytes,
+        )
     }
 
     fn set_num_of_slots(&mut self, num: Offset) {
@@ -495,7 +501,11 @@ impl Page {
     }
 
     fn left_sibling(&self) -> Offset {
-        Self::read_le::<Offset, S_LEFT_SIBLING>(&self.buffer, OFFSET_LEFT_SIBLING, Offset::from_bytes)
+        Self::read_le::<Offset, S_LEFT_SIBLING>(
+            &self.buffer,
+            OFFSET_LEFT_SIBLING,
+            Offset::from_bytes,
+        )
     }
 
     fn set_left_sibling(&mut self, num: Offset) {
@@ -564,23 +574,24 @@ impl Page {
     fn key_at(&self, index: usize) -> Result<String, InvalidPageOffsetError> {
         let slot_offset = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
-            TOTAL_HEADER_SIZE + (index * S_PAGE_ID),
+            TOTAL_HEADER_SIZE + (index * S_SLOT_TABLE_ITEM),
             Offset::from_bytes,
         );
 
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let page_type_size: usize = S_PAGE_ID;
-        let payload_type_offset = slot_offset_usize + page_type_size;
+        // we don't need to read the payload length which is stored in the first register.
+        // let's skip it to resolve the payload type.
+        let payload_type_offset = slot_offset_usize + S_OFFSET;
         //TODO according to payload type we should use deserialization helper.
         // let payload_type = Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, payload_type_offset, u8::from_bytes);
-        let key_len_offset = payload_type_offset + S_FLAGS;
+        let key_len_offset = payload_type_offset + S_PAGE_TYPE;
         let key_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             key_len_offset,
             Offset::from_bytes,
         );
 
-        let key_type_offset = key_len_offset + S_PAGE_ID;
+        let key_type_offset = key_len_offset + S_OFFSET;
         let overflow_page_ref_offset = key_type_offset + S_FLAGS;
         let key_offset = overflow_page_ref_offset + S_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
@@ -633,7 +644,7 @@ fn verify_read_the_inserted() {
     let mut new_inner = Page::new_inner();
     let payload1 = Payload::from_str("123".to_string());
     let payload2 = Payload::from_str("234".to_string());
-    let _ = new_inner.add_key_ref(Key::from_str("abcdefg".to_string()), payload1);
+    let _ = new_inner.add_key_ref(Key::from_str("abcdefh".to_string()), payload1);
     let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), payload2);
     match new_inner.get_key_payload(ZERO) {
         Ok(payload) => {
