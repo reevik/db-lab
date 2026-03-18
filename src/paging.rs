@@ -1,3 +1,4 @@
+use crate::config::{get_next_page_id, update_next_page_id};
 use crate::errors::InvalidPageOffsetError;
 use crate::io;
 use crate::io::delete_index;
@@ -8,6 +9,7 @@ use rand::Rng;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Read;
+use serial_test::serial;
 
 const ZERO: Offset = Offset(0);
 static mut NEXT_PAGE_ID: Offset = Offset(0);
@@ -21,7 +23,7 @@ const MAX_KEY_SIZE: usize = 1024;
 
 // Reference size constants.
 const S_NUM_OF_SLOTS: usize = size_of::<Offset>();
-const S_PAGE_ID: usize = size_of::<Offset>();
+pub(crate) const S_PAGE_ID: usize = size_of::<Offset>();
 const S_PAGE_TYPE: usize = size_of::<u8>();
 const S_FLAGS: usize = size_of::<u8>();
 const S_LEFT_MOST: usize = size_of::<Offset>();
@@ -49,8 +51,11 @@ pub const TOTAL_HEADER_SIZE: usize = S_FLAGS
     + S_FREE_END;
 
 /// Slot structure as follows:
-/// slot offset[0] → | payload size | payload type | key size | key type | overflow ref | key | payload
-pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize = SINGLE_SLOT_HEADER_SIZE + S_SLOT_TABLE_ITEM;
+///                   ___________________________________________________________________________________
+/// slot offset[0] → | payload size | payload type | key size | key type | overflow ref | key | payload |
+///                   ----------------------------------------------------------------------------------
+pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize =
+    SINGLE_SLOT_HEADER_SIZE + S_SLOT_TABLE_ITEM;
 pub const SINGLE_SLOT_HEADER_SIZE: usize = 1 * S_PAGE_ID + 2 * S_DATA_LENGTH + 2 * S_DATA_TYPE;
 
 /// Offsets in a page header.
@@ -74,11 +79,10 @@ const DATA_PAGE: u8 = 0;
 const INNER_PAGE: u8 = 1;
 
 fn next_page() -> Offset {
-    unsafe {
-        let next = NEXT_PAGE_ID;
-        NEXT_PAGE_ID = Offset(NEXT_PAGE_ID.0 + 1);
-        next
-    }
+    let mut next = get_next_page_id();
+    next = next + 1;
+    update_next_page_id(next);
+    next
 }
 
 impl Page {
@@ -161,8 +165,6 @@ impl Page {
         let payload_size = payload.len();
         let payload_type = payload_ref.payload_type;
         let key_buf_type: PayloadType = Str;
-
-
         let slots_available = self.slots_available()?;
         if slots_available == 0 {
             panic!("No slot left!");
@@ -287,7 +289,6 @@ impl Page {
         Ok((payload, next_page_id))
     }
 
-
     /// slot offset[0] → next_page_id | payload_size | payload
     fn max_available_payload_size_in_overflow_page(&self) -> Offset {
         self.free_size() - S_SLOT_TABLE_ITEM - S_DATA_LENGTH - S_PAGE_ID
@@ -332,11 +333,8 @@ impl Page {
     fn get_key_payload(&self, index: Offset) -> Result<String, InvalidPageOffsetError> {
         let index_usize: usize = index.try_into()?;
         let offset_index = TOTAL_HEADER_SIZE + (index_usize * S_SLOT_TABLE_ITEM);
-        let slot_offset = Self::read_le::<Offset, S_OFFSET>(
-            &self.buffer,
-            offset_index,
-            Offset::from_bytes,
-        );
+        let slot_offset =
+            Self::read_le::<Offset, S_OFFSET>(&self.buffer, offset_index, Offset::from_bytes);
         let payload_len = Self::read_le::<Offset, S_DATA_LENGTH>(
             &self.buffer,
             slot_offset.try_into()?,
@@ -344,7 +342,8 @@ impl Page {
         );
         let slot_offset_usize: usize = slot_offset.try_into()?;
         let payload_type_offset = slot_offset_usize + S_DATA_LENGTH;
-        let payload_type = Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
+        let payload_type =
+            Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
         let key_len_offset = payload_type_offset + S_DATA_TYPE;
         let key_len = Self::read_le::<Offset, S_DATA_LENGTH>(
             &self.buffer,
@@ -603,6 +602,7 @@ impl Page {
 }
 
 #[test]
+#[serial]
 fn test_add_slot_results_in_correct_num_of_slots() {
     let mut new_inner = Page::new_inner();
     let key1 = Payload::from_u16(123);
@@ -613,6 +613,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
 }
 
 #[test]
+#[serial]
 fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError> {
     let new_inner = Page::new_inner();
     let available_space = new_inner.free_size();
@@ -622,6 +623,7 @@ fn verify_available_space_empty_page() -> Result<(), InvalidPageOffsetError> {
 }
 
 #[test]
+#[serial]
 fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError> {
     let key1 = Key::from_str("foo".to_string());
     let key2 = Key::from_str("foo".to_string());
@@ -640,6 +642,7 @@ fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError
 }
 
 #[test]
+#[serial]
 fn verify_read_the_inserted() {
     let mut new_inner = Page::new_inner();
     let payload1 = Payload::from_str("123".to_string());
@@ -662,6 +665,7 @@ fn verify_read_the_inserted() {
 }
 
 #[test]
+#[serial]
 fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetError> {
     let page_size: usize = PAGE_SIZE.try_into()?;
     let string = random_string(100);
@@ -679,6 +683,7 @@ fn verify_add_data_node_less_than_page_size() -> Result<(), InvalidPageOffsetErr
 }
 
 #[test]
+#[serial]
 fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
     let key = Key::from_str("foo".to_string());
     let max_page_size: usize = PAGE_SIZE.try_into()?;
@@ -708,6 +713,7 @@ fn verify_add_data_node_full_page() -> Result<(), InvalidPageOffsetError> {
 }
 
 #[test]
+#[serial]
 fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidPageOffsetError> {
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
@@ -745,6 +751,7 @@ fn add_to_page(page_id: usize, key: String, second_input: String) {
 }
 
 #[test]
+#[serial]
 fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffsetError> {
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into()?;
@@ -772,6 +779,7 @@ fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffs
 }
 
 #[test]
+#[serial]
 #[should_panic(expected = "No slot left!")]
 fn verify_max_fan_out() {
     delete_index();
@@ -797,8 +805,17 @@ fn verify_max_fan_out() {
     }
 }
 
+#[test]
+#[serial]
+fn verify_next_page_id() {
+    delete_index();
+    assert_eq!(next_page(), Offset(1));
+    assert_eq!(next_page(), Offset(2));
+}
+
 // This test ensures minimum fan-out in case all payloads exceeds the page capacity.
 #[test]
+#[serial]
 fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
     delete_index();
     let page_size: usize = PAGE_SIZE.try_into().expect("");

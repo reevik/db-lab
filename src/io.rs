@@ -52,4 +52,9 @@ pub(crate) fn delete_index() {
         Ok(_) => println!("index.000 deleted."),
         Err(_) => println!("index.000 not found."),
     }
+
+    match fs::remove_file("config") {
+        Ok(_) => println!("config deleted."),
+        Err(_) => println!("config not found."),
+    }
 }

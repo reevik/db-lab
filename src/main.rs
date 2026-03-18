@@ -6,6 +6,7 @@ mod types;
 mod errors;
 mod btree;
 mod io;
+mod config;
 
 fn main() {
     println!("Hello, world!");
