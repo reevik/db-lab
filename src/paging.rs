@@ -2,65 +2,71 @@ use crate::errors::InvalidPageOffsetError;
 use crate::io;
 use crate::io::delete_index;
 use crate::types::PayloadType::Str;
-use crate::types::{o16, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
+use crate::types::{Offset, FromLeBytes, Key, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use rand::Rng;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Read;
 
-const ZERO: o16 = o16(0);
-static mut NEXT_PAGE_ID: o16 = o16(0);
-pub(crate) const PAGE_SIZE: o16 = o16(8172);
+const ZERO: Offset = Offset(0);
+static mut NEXT_PAGE_ID: Offset = Offset(0);
+pub(crate) const PAGE_SIZE: Offset = Offset(8172);
 pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
+
+// min-max ranges.
 const MIN_FAN_OUT: usize = 5;
 const MAX_FAN_OUT: usize = 10;
 const MAX_KEY_SIZE: usize = 1024;
-const SIZE_NUM_OF_SLOTS: usize = size_of::<o16>();
-const SIZE_PAGE_ID: usize = size_of::<o16>();
-const SIZE_PAGE_TYPE: usize = size_of::<u8>();
-const SIZE_FLAGS: usize = size_of::<u8>();
-const SIZE_LEFT_MOST: usize = size_of::<o16>();
-const SIZE_LEFT_SIBLING: usize = size_of::<o16>();
-const SIZE_RIGHT_SIBLING: usize = size_of::<o16>();
-const SIZE_PARENT_PAGE_ID: usize = size_of::<o16>();
-const SIZE_FREE_START: usize = size_of::<o16>();
-const SIZE_FREE_END: usize = size_of::<o16>();
-const SIZE_OF_SLOT_TABLE_ITEM: usize = size_of::<o16>();
-const SIZE_OFFSET: usize = size_of::<o16>();
 
-pub const TOTAL_HEADER_SIZE: usize = SIZE_FLAGS
-    + SIZE_RIGHT_SIBLING
-    + SIZE_LEFT_SIBLING
-    + SIZE_LEFT_MOST
-    + SIZE_PARENT_PAGE_ID
-    + SIZE_PAGE_ID
-    + SIZE_PAGE_TYPE
-    + SIZE_NUM_OF_SLOTS
-    + SIZE_FREE_START
-    + SIZE_FREE_END;
+// Reference size constants.
+const S_NUM_OF_SLOTS: usize = size_of::<Offset>();
+const S_PAGE_ID: usize = size_of::<Offset>();
+const S_PAGE_TYPE: usize = size_of::<u8>();
+const S_FLAGS: usize = size_of::<u8>();
+const S_LEFT_MOST: usize = size_of::<Offset>();
+const S_LEFT_SIBLING: usize = size_of::<Offset>();
+const S_RIGHT_SIBLING: usize = size_of::<Offset>();
+const S_PARENT_PAGE_ID: usize = size_of::<Offset>();
+const S_FREE_START: usize = size_of::<Offset>();
+const S_FREE_END: usize = size_of::<Offset>();
+const S_SLOT_TABLE_ITEM: usize = size_of::<Offset>();
+
+// Size of offset reference.
+const S_OFFSET: usize = size_of::<Offset>();
+
+pub const TOTAL_HEADER_SIZE: usize = S_FLAGS
+    + S_RIGHT_SIBLING
+    + S_LEFT_SIBLING
+    + S_LEFT_MOST
+    + S_PARENT_PAGE_ID
+    + S_PAGE_ID
+    + S_PAGE_TYPE
+    + S_NUM_OF_SLOTS
+    + S_FREE_START
+    + S_FREE_END;
 
 pub const SINGLE_RECORD_METADATA_SPACE_REQUIREMENT: usize =
-    SINGLE_SLOT_HEADER_SIZE + SIZE_OF_SLOT_TABLE_ITEM;
+    SINGLE_SLOT_HEADER_SIZE + S_SLOT_TABLE_ITEM;
 
 // 1x key size
 // 1x payload size
 // 1x overflow page ref.
 // key type
 // payload type.
-pub const SINGLE_SLOT_HEADER_SIZE: usize = 3 * SIZE_PAGE_ID + 2 * SIZE_PAGE_TYPE;
+pub const SINGLE_SLOT_HEADER_SIZE: usize = 3 * S_OFFSET + 2 * S_PAGE_TYPE;
 
 /// Offsets in the
 const OFFSET_NUM_OF_SLOTS: usize = 0;
-const OFFSET_PAGE_ID: usize = OFFSET_NUM_OF_SLOTS + SIZE_NUM_OF_SLOTS;
-const OFFSET_PAGE_TYPE: usize = OFFSET_PAGE_ID + SIZE_PAGE_ID;
-const OFFSET_FLAGS: usize = OFFSET_PAGE_TYPE + SIZE_PAGE_TYPE;
-const OFFSET_LEFT_MOST: usize = OFFSET_FLAGS + SIZE_FLAGS;
-const OFFSET_LEFT_SIBLING: usize = OFFSET_LEFT_MOST + SIZE_LEFT_MOST;
-const OFFSET_RIGHT_SIBLING: usize = OFFSET_LEFT_SIBLING + SIZE_LEFT_SIBLING;
-const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + SIZE_RIGHT_SIBLING;
-const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + SIZE_PARENT_PAGE_ID;
-const OFFSET_FREE_END: usize = OFFSET_FREE_START + SIZE_FREE_START;
+const OFFSET_PAGE_ID: usize = OFFSET_NUM_OF_SLOTS + S_NUM_OF_SLOTS;
+const OFFSET_PAGE_TYPE: usize = OFFSET_PAGE_ID + S_PAGE_ID;
+const OFFSET_FLAGS: usize = OFFSET_PAGE_TYPE + S_PAGE_TYPE;
+const OFFSET_LEFT_MOST: usize = OFFSET_FLAGS + S_FLAGS;
+const OFFSET_LEFT_SIBLING: usize = OFFSET_LEFT_MOST + S_LEFT_MOST;
+const OFFSET_RIGHT_SIBLING: usize = OFFSET_LEFT_SIBLING + S_LEFT_SIBLING;
+const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + S_RIGHT_SIBLING;
+const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + S_PARENT_PAGE_ID;
+const OFFSET_FREE_END: usize = OFFSET_FREE_START + S_FREE_START;
 
 #[derive(Clone, Copy)]
 pub struct Page {
@@ -70,10 +76,10 @@ pub struct Page {
 const DATA_PAGE: u8 = 0;
 const INNER_PAGE: u8 = 1;
 
-fn next_page() -> o16 {
+fn next_page() -> Offset {
     unsafe {
         let next = NEXT_PAGE_ID;
-        NEXT_PAGE_ID = o16(NEXT_PAGE_ID.0 + 1);
+        NEXT_PAGE_ID = Offset(NEXT_PAGE_ID.0 + 1);
         next
     }
 }
@@ -83,7 +89,7 @@ impl Page {
         Self::new_page(page_type, next_page())
     }
 
-    fn new_page(page_type: u8, page_id: o16) -> Self {
+    fn new_page(page_type: u8, page_id: Offset) -> Self {
         let mut new_instance = Self {
             buffer: [0u8; PAGE_SIZE_USIZE],
         };
@@ -105,12 +111,12 @@ impl Page {
         Page { buffer }
     }
 
-    pub fn new_leaf(key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
+    pub fn new_leaf(key: Key, payload: Payload) -> Result<Offset, InvalidPageOffsetError> {
         let mut head_page = Self::new(DATA_PAGE);
         head_page.add(key, payload)
     }
 
-    pub fn add(&mut self, key: Key, payload: Payload) -> Result<o16, InvalidPageOffsetError> {
+    pub fn add(&mut self, key: Key, payload: Payload) -> Result<Offset, InvalidPageOffsetError> {
         let head_page = self;
         let current_page_id = head_page.page_id();
         let mut current_page = head_page;
@@ -132,7 +138,7 @@ impl Page {
         Self::new(INNER_PAGE)
     }
 
-    pub fn add_left_most(&mut self, left_most_page_id: o16) {
+    pub fn add_left_most(&mut self, left_most_page_id: Offset) {
         self.set_left_most_page_id(left_most_page_id);
     }
 
@@ -148,7 +154,7 @@ impl Page {
         &mut self,
         key: Key,
         mut payload: Payload,
-    ) -> Result<(Payload, o16), InvalidPageOffsetError> {
+    ) -> Result<(Payload, Offset), InvalidPageOffsetError> {
         // determine the payload and key size.
         let payload_ref = &payload;
         let key_buf = key.to_bytes();
@@ -170,16 +176,16 @@ impl Page {
         let _ = payload.read(&mut read_buf);
         let mut slot: Vec<u8> =
             Vec::with_capacity(Self::slot_size(key_buf_size, payload_size).try_into()?);
-        let payload_size_in_o16: o16 = read_buf.len().try_into()?;
-        let key_buf_size_in_o16: o16 = key_buf_size.try_into()?;
+        let payload_size_in_offset: Offset = read_buf.len().try_into()?;
+        let key_buf_size_in_offset: Offset = key_buf_size.try_into()?;
         let overflow_page_id = if payload.len() > 0 {
             next_page()
         } else {
-            o16(0)
+            Offset(0)
         };
-        slot.extend_from_slice(&payload_size_in_o16.to_bytes());
+        slot.extend_from_slice(&payload_size_in_offset.to_bytes());
         slot.extend_from_slice(&[payload_type as u8]);
-        slot.extend_from_slice(&key_buf_size_in_o16.to_bytes());
+        slot.extend_from_slice(&key_buf_size_in_offset.to_bytes());
         slot.extend_from_slice(&[key_buf_type as u8]);
         slot.extend_from_slice(&overflow_page_id.to_bytes());
         slot.extend_from_slice(key_buf.as_slice());
@@ -222,26 +228,26 @@ impl Page {
     }
 
     // Read offset payload as a vector of bytes.
-    fn get_overflow_data(&self) -> Result<(Vec<u8>, o16), InvalidPageOffsetError> {
+    fn get_overflow_data(&self) -> Result<(Vec<u8>, Offset), InvalidPageOffsetError> {
         let offset_index = TOTAL_HEADER_SIZE;
-        let slot_offset = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let slot_offset = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             offset_index,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
 
-        let next_overflow = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let next_overflow = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             slot_offset.try_into()?,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
 
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let payload_size_offset = slot_offset_usize + SIZE_PAGE_ID;
+        let payload_size_offset = slot_offset_usize + S_PAGE_ID;
         let payload_len =
-            Self::read_le::<o16, SIZE_PAGE_ID>(&self.buffer, payload_size_offset, o16::from_bytes);
+            Self::read_le::<Offset, S_PAGE_ID>(&self.buffer, payload_size_offset, Offset::from_bytes);
 
-        let payload_offset = payload_size_offset + SIZE_PAGE_ID;
+        let payload_offset = payload_size_offset + S_PAGE_ID;
         let payload: Vec<u8> = Self::read_le_into_buffer::<Vec<u8>>(
             &self.buffer,
             payload_offset,
@@ -254,7 +260,7 @@ impl Page {
     fn add_overflow_data(
         &mut self,
         mut payload: Payload,
-    ) -> Result<(Payload, o16), InvalidPageOffsetError> {
+    ) -> Result<(Payload, Offset), InvalidPageOffsetError> {
         let max_available_payload_size: usize = self
             .max_available_payload_size_in_overflow_page()
             .try_into()
@@ -262,15 +268,15 @@ impl Page {
         let copy_size = min(payload.len(), max_available_payload_size);
         let mut payload_in_bytes: Vec<u8> = vec![0; copy_size];
         let _ = payload.read(&mut payload_in_bytes);
-        let copy_size_o16: o16 = copy_size.try_into().expect("Too many pages");
+        let copy_size_offset: Offset = copy_size.try_into().expect("Too many pages");
         let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
         let next_page_id = if payload.len() > 0 {
             next_page()
         } else {
-            o16(0)
+            Offset(0)
         };
         slot.extend_from_slice(&next_page_id.to_bytes());
-        slot.extend_from_slice(&copy_size_o16.to_bytes());
+        slot.extend_from_slice(&copy_size_offset.to_bytes());
         slot.extend_from_slice(&payload_in_bytes);
         let new_free_end = self.add_slot(&mut slot)?;
         // advance the free start and slot table with the new free end.
@@ -278,11 +284,11 @@ impl Page {
         Ok((payload, next_page_id))
     }
 
-    fn max_available_payload_size_in_overflow_page(&self) -> o16 {
-        self.free_size() - 3 * SIZE_OF_SLOT_TABLE_ITEM
+    fn max_available_payload_size_in_overflow_page(&self) -> Offset {
+        self.free_size() - 3 * S_SLOT_TABLE_ITEM
     }
 
-    fn slot_size(key_len: usize, payload_len: usize) -> o16 {
+    fn slot_size(key_len: usize, payload_len: usize) -> Offset {
         (SINGLE_SLOT_HEADER_SIZE + key_len + payload_len)
             .try_into()
             .expect("Too many pages")
@@ -291,13 +297,13 @@ impl Page {
     // new_free_end is the new position of the free_end after inserting a new slot at the end of the
     // page. The slots make the page grow backward:
     // | Page Header | slot table | ... free space ... | new slot | prev slot | .. |
-    fn add_to_slot_table(&mut self, new_free_end: o16) -> Result<(), InvalidPageOffsetError> {
+    fn add_to_slot_table(&mut self, new_free_end: Offset) -> Result<(), InvalidPageOffsetError> {
         let free_start = self.free_start();
         let new_free_end_offset = &new_free_end.to_bytes();
         let start: usize = free_start.try_into()?;
-        let end: usize = start + SIZE_OF_SLOT_TABLE_ITEM;
+        let end: usize = start + S_SLOT_TABLE_ITEM;
         self.buffer[start..end].copy_from_slice(new_free_end_offset);
-        let size_of_slot_table_item: o16 = SIZE_OF_SLOT_TABLE_ITEM.try_into()?;
+        let size_of_slot_table_item: Offset = S_SLOT_TABLE_ITEM.try_into()?;
         self.set_free_start(free_start + size_of_slot_table_item);
         self.set_num_of_slots(self.num_of_slots() + 1);
         debug_assert!(self.free_start() <= self.free_end());
@@ -310,47 +316,47 @@ impl Page {
             if let Ok(current_key) = self.key_at(i)
                 && key.to_str() == current_key
             {
-                let i_o16 = i.try_into()?;
-                let found = self.get_key_payload(i_o16);
+                let i_offset = i.try_into()?;
+                let found = self.get_key_payload(i_offset);
                 return found;
             }
         }
         Ok("".to_string())
     }
 
-    fn get_key_payload(&self, index: o16) -> Result<String, InvalidPageOffsetError> {
+    fn get_key_payload(&self, index: Offset) -> Result<String, InvalidPageOffsetError> {
         let index_usize: usize = index.try_into()?;
-        let o16_size: usize = size_of::<o16>();
-        let offset_index = TOTAL_HEADER_SIZE + (index_usize * o16_size);
-        let slot_offset = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let offset_size: usize = size_of::<Offset>();
+        let offset_index = TOTAL_HEADER_SIZE + (index_usize * offset_size);
+        let slot_offset = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             offset_index,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
-        let payload_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let payload_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             slot_offset.try_into()?,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let page_type_size: usize = SIZE_PAGE_ID;
+        let page_type_size: usize = S_PAGE_ID;
         let payload_type_offset = slot_offset_usize + page_type_size;
         let payload_type =
-            Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, payload_type_offset, u8::from_bytes);
-        let key_len_offset = payload_type_offset + SIZE_FLAGS;
-        let key_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+            Self::read_le::<u8, S_FLAGS>(&self.buffer, payload_type_offset, u8::from_bytes);
+        let key_len_offset = payload_type_offset + S_FLAGS;
+        let key_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             key_len_offset,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
-        let key_type_offset = key_len_offset + SIZE_PAGE_ID;
-        let overflow_page_ref_offset = key_type_offset + SIZE_FLAGS;
-        let overflow_page_ref = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let key_type_offset = key_len_offset + S_PAGE_ID;
+        let overflow_page_ref_offset = key_type_offset + S_FLAGS;
+        let overflow_page_ref = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             overflow_page_ref_offset,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
-        let key_offset = overflow_page_ref_offset + SIZE_PAGE_ID;
+        let key_offset = overflow_page_ref_offset + S_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
         let page_size: usize = PAGE_SIZE.try_into()?;
         let max_payload_capacity = page_size
@@ -396,7 +402,7 @@ impl Page {
         String::from_utf8_lossy(data.as_slice()).to_string()
     }
 
-    fn add_slot(&mut self, slot: &Vec<u8>) -> Result<o16, InvalidPageOffsetError> {
+    fn add_slot(&mut self, slot: &Vec<u8>) -> Result<Offset, InvalidPageOffsetError> {
         let free_end = self.free_end();
         let new_free_end = free_end - slot.len();
         // update the buffer with key-payload.
@@ -408,7 +414,7 @@ impl Page {
         Ok(new_free_end)
     }
 
-    pub(crate) fn free_size(&self) -> o16 {
+    pub(crate) fn free_size(&self) -> Offset {
         self.free_end() - self.free_start()
     }
 
@@ -429,12 +435,12 @@ impl Page {
     }
 
     /// Returns the number of slots from the first two bytes in the page.
-    fn num_of_slots(&self) -> o16 {
-        Self::read_le::<o16, SIZE_NUM_OF_SLOTS>(&self.buffer, OFFSET_NUM_OF_SLOTS, o16::from_bytes)
+    fn num_of_slots(&self) -> Offset {
+        Self::read_le::<Offset, S_NUM_OF_SLOTS>(&self.buffer, OFFSET_NUM_OF_SLOTS, Offset::from_bytes)
     }
 
-    fn set_num_of_slots(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_NUM_OF_SLOTS>(
+    fn set_num_of_slots(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_NUM_OF_SLOTS>(
             &mut self.buffer,
             OFFSET_NUM_OF_SLOTS,
             num,
@@ -442,12 +448,12 @@ impl Page {
         );
     }
 
-    pub(crate) fn page_id(&self) -> o16 {
-        Self::read_le::<o16, SIZE_PAGE_ID>(&self.buffer, OFFSET_PAGE_ID, |v| o16::from_bytes(v))
+    pub(crate) fn page_id(&self) -> Offset {
+        Self::read_le::<Offset, S_PAGE_ID>(&self.buffer, OFFSET_PAGE_ID, |v| Offset::from_bytes(v))
     }
 
-    fn set_page_id(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_PAGE_ID>(&mut self.buffer, OFFSET_PAGE_ID, num, |value| {
+    fn set_page_id(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_PAGE_ID>(&mut self.buffer, OFFSET_PAGE_ID, num, |value| {
             value.to_bytes()
         });
     }
@@ -457,43 +463,43 @@ impl Page {
     }
 
     pub(crate) fn page_type(&self) -> u8 {
-        Self::read_le::<u8, SIZE_PAGE_TYPE>(&self.buffer, OFFSET_PAGE_TYPE, |value| {
+        Self::read_le::<u8, S_PAGE_TYPE>(&self.buffer, OFFSET_PAGE_TYPE, |value| {
             u8::from_bytes(value)
         })
     }
 
     fn set_page_type(&mut self, num: u8) {
-        Self::write_le::<u8, SIZE_PAGE_TYPE>(&mut self.buffer, OFFSET_PAGE_TYPE, num, |value| {
+        Self::write_le::<u8, S_PAGE_TYPE>(&mut self.buffer, OFFSET_PAGE_TYPE, num, |value| {
             value.to_le_bytes().to_vec()
         });
     }
 
     fn flags(&self) -> u8 {
-        Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, OFFSET_FLAGS, u8::from_bytes)
+        Self::read_le::<u8, S_FLAGS>(&self.buffer, OFFSET_FLAGS, u8::from_bytes)
     }
 
     fn set_flags(&mut self, num: u8) {
-        Self::write_le::<u8, SIZE_FLAGS>(&mut self.buffer, OFFSET_FLAGS, num, |value| {
+        Self::write_le::<u8, S_FLAGS>(&mut self.buffer, OFFSET_FLAGS, num, |value| {
             value.to_le_bytes().to_vec()
         });
     }
 
-    fn left_most_page_id(&self) -> o16 {
-        Self::read_le::<o16, SIZE_LEFT_MOST>(&self.buffer, OFFSET_LEFT_MOST, o16::from_bytes)
+    fn left_most_page_id(&self) -> Offset {
+        Self::read_le::<Offset, S_LEFT_MOST>(&self.buffer, OFFSET_LEFT_MOST, Offset::from_bytes)
     }
 
-    fn set_left_most_page_id(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_LEFT_MOST>(&mut self.buffer, OFFSET_LEFT_MOST, num, |value| {
+    fn set_left_most_page_id(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_LEFT_MOST>(&mut self.buffer, OFFSET_LEFT_MOST, num, |value| {
             value.to_bytes()
         });
     }
 
-    fn left_sibling(&self) -> o16 {
-        Self::read_le::<o16, SIZE_LEFT_SIBLING>(&self.buffer, OFFSET_LEFT_SIBLING, o16::from_bytes)
+    fn left_sibling(&self) -> Offset {
+        Self::read_le::<Offset, S_LEFT_SIBLING>(&self.buffer, OFFSET_LEFT_SIBLING, Offset::from_bytes)
     }
 
-    fn set_left_sibling(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_LEFT_SIBLING>(
+    fn set_left_sibling(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_LEFT_SIBLING>(
             &mut self.buffer,
             OFFSET_LEFT_SIBLING,
             num,
@@ -501,16 +507,16 @@ impl Page {
         );
     }
 
-    fn right_sibling(&self) -> o16 {
-        Self::read_le::<o16, SIZE_RIGHT_SIBLING>(
+    fn right_sibling(&self) -> Offset {
+        Self::read_le::<Offset, S_RIGHT_SIBLING>(
             &self.buffer,
             OFFSET_RIGHT_SIBLING,
-            o16::from_bytes,
+            Offset::from_bytes,
         )
     }
 
-    fn set_right_sibling(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_RIGHT_SIBLING>(
+    fn set_right_sibling(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_RIGHT_SIBLING>(
             &mut self.buffer,
             OFFSET_RIGHT_SIBLING,
             num,
@@ -518,16 +524,16 @@ impl Page {
         );
     }
 
-    fn parent(&self) -> o16 {
-        Self::read_le::<o16, SIZE_PARENT_PAGE_ID>(
+    fn parent(&self) -> Offset {
+        Self::read_le::<Offset, S_PARENT_PAGE_ID>(
             &self.buffer,
             OFFSET_PARENT_PAGE_ID,
-            o16::from_bytes,
+            Offset::from_bytes,
         )
     }
 
-    fn set_parent(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_PARENT_PAGE_ID>(
+    fn set_parent(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_PARENT_PAGE_ID>(
             &mut self.buffer,
             OFFSET_PARENT_PAGE_ID,
             num,
@@ -535,48 +541,48 @@ impl Page {
         );
     }
 
-    pub(crate) fn free_start(&self) -> o16 {
-        Self::read_le::<o16, SIZE_FREE_START>(&self.buffer, OFFSET_FREE_START, o16::from_bytes)
+    pub(crate) fn free_start(&self) -> Offset {
+        Self::read_le::<Offset, S_FREE_START>(&self.buffer, OFFSET_FREE_START, Offset::from_bytes)
     }
 
-    fn set_free_start(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_FREE_START>(&mut self.buffer, OFFSET_FREE_START, num, |value| {
+    fn set_free_start(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_FREE_START>(&mut self.buffer, OFFSET_FREE_START, num, |value| {
             value.to_bytes()
         });
     }
 
-    fn free_end(&self) -> o16 {
-        Self::read_le::<o16, SIZE_FREE_END>(&self.buffer, OFFSET_FREE_END, o16::from_bytes)
+    fn free_end(&self) -> Offset {
+        Self::read_le::<Offset, S_FREE_END>(&self.buffer, OFFSET_FREE_END, Offset::from_bytes)
     }
 
-    fn set_free_end(&mut self, num: o16) {
-        Self::write_le::<o16, SIZE_FREE_END>(&mut self.buffer, OFFSET_FREE_END, num, |value| {
+    fn set_free_end(&mut self, num: Offset) {
+        Self::write_le::<Offset, S_FREE_END>(&mut self.buffer, OFFSET_FREE_END, num, |value| {
             value.to_bytes()
         });
     }
 
     fn key_at(&self, index: usize) -> Result<String, InvalidPageOffsetError> {
-        let slot_offset = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let slot_offset = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
-            TOTAL_HEADER_SIZE + (index * SIZE_PAGE_ID),
-            o16::from_bytes,
+            TOTAL_HEADER_SIZE + (index * S_PAGE_ID),
+            Offset::from_bytes,
         );
 
         let slot_offset_usize: usize = slot_offset.try_into()?;
-        let page_type_size: usize = SIZE_PAGE_ID;
+        let page_type_size: usize = S_PAGE_ID;
         let payload_type_offset = slot_offset_usize + page_type_size;
         //TODO according to payload type we should use deserialization helper.
         // let payload_type = Self::read_le::<u8, SIZE_FLAGS>(&self.buffer, payload_type_offset, u8::from_bytes);
-        let key_len_offset = payload_type_offset + SIZE_FLAGS;
-        let key_len = Self::read_le::<o16, SIZE_OF_SLOT_TABLE_ITEM>(
+        let key_len_offset = payload_type_offset + S_FLAGS;
+        let key_len = Self::read_le::<Offset, S_SLOT_TABLE_ITEM>(
             &self.buffer,
             key_len_offset,
-            o16::from_bytes,
+            Offset::from_bytes,
         );
 
-        let key_type_offset = key_len_offset + SIZE_PAGE_ID;
-        let overflow_page_ref_offset = key_type_offset + SIZE_FLAGS;
-        let key_offset = overflow_page_ref_offset + SIZE_PAGE_ID;
+        let key_type_offset = key_len_offset + S_PAGE_ID;
+        let overflow_page_ref_offset = key_type_offset + S_FLAGS;
+        let key_offset = overflow_page_ref_offset + S_PAGE_ID;
         let key_len_usize: usize = key_len.try_into()?;
         let key_value =
             Self::read_le_into_buffer::<Vec<u8>>(&self.buffer, key_offset, key_len_usize, |b| b);
@@ -592,7 +598,7 @@ fn test_add_slot_results_in_correct_num_of_slots() {
     let key2 = Payload::from_u16(789);
     let _ = new_inner.add_key_ref(Key::from_str("abc".to_string()), key1);
     let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), key2);
-    assert_eq!(new_inner.num_of_slots(), o16(2));
+    assert_eq!(new_inner.num_of_slots(), Offset(2));
 }
 
 #[test]
@@ -617,7 +623,7 @@ fn verify_available_space_after_insertion() -> Result<(), InvalidPageOffsetError
     let slot_size: usize = Page::slot_size(key1.len(), payload_len).try_into()?;
     let page_size: usize = PAGE_SIZE.try_into()?;
     let total_empty_size: usize =
-        page_size - (TOTAL_HEADER_SIZE + (2 * SIZE_OF_SLOT_TABLE_ITEM) + (2 * slot_size));
+        page_size - (TOTAL_HEADER_SIZE + (2 * S_SLOT_TABLE_ITEM) + (2 * slot_size));
     assert_eq!(available_space, total_empty_size);
     Ok(())
 }
@@ -636,7 +642,7 @@ fn verify_read_the_inserted() {
         Err(_) => assert!(false),
     }
 
-    match new_inner.get_key_payload(o16(1)) {
+    match new_inner.get_key_payload(Offset(1)) {
         Ok(payload) => {
             assert_eq!(payload, "234");
         }

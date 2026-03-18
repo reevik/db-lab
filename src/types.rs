@@ -16,13 +16,16 @@ impl OffsetType<u16> {
     pub(crate) fn from_u16(i: u16) -> Self {
         OffsetType(i)
     }
+    pub(crate) fn size() -> usize {
+        size_of::<Self>()
+    }
 }
 
-/// o16 is a type alias representing the offset type in a page.
-pub(crate) type o16 = OffsetType<u16>;
+/// Offset is a type alias representing the offset type in a page.
+pub(crate) type Offset = OffsetType<u16>;
 
-// A convenience function to create o16 types from u16.
-pub(crate) const fn o16(value: u16) -> o16 {
+// A convenience function to create Offset types from u16.
+pub(crate) const fn Offset(value: u16) -> Offset {
     OffsetType(value)
 }
 
@@ -76,8 +79,8 @@ where
     }
 }
 
-impl Add<i32> for o16 {
-    type Output = o16;
+impl Add<i32> for Offset {
+    type Output = Offset;
 
     fn add(self, rhs: i32) -> Self::Output {
         let right_value: u16 = rhs.try_into().expect("overflow");
@@ -85,8 +88,8 @@ impl Add<i32> for o16 {
     }
 }
 
-impl Add<usize> for o16 {
-    type Output = o16;
+impl Add<usize> for Offset {
+    type Output = Offset;
 
     fn add(self, rhs: usize) -> Self::Output {
         let rhs_u16: u16 = rhs.try_into().expect("rhs exceeds u16::MAX");
@@ -94,25 +97,25 @@ impl Add<usize> for o16 {
     }
 }
 
-impl Mul<usize> for o16 {
-    type Output = o16;
+impl Mul<usize> for Offset {
+    type Output = Offset;
 
     fn mul(self, rhs: usize) -> Self::Output {
         let rhs_u16: u16 = rhs.try_into().expect("rhs exceeds u16::MAX");
-        o16(rhs_u16.checked_mul(self.0).expect("overflow"))
+        Offset(rhs_u16.checked_mul(self.0).expect("overflow"))
     }
 }
 
-impl Mul<o16> for o16 {
-    type Output = o16;
+impl Mul<Offset> for Offset {
+    type Output = Offset;
 
-    fn mul(self, rhs: o16) -> Self::Output {
-        o16(rhs.0.checked_mul(self.0).expect("overflow"))
+    fn mul(self, rhs: Offset) -> Self::Output {
+        Offset(rhs.0.checked_mul(self.0).expect("overflow"))
     }
 }
 
-impl Sub<usize> for o16 {
-    type Output = o16;
+impl Sub<usize> for Offset {
+    type Output = Offset;
 
     fn sub(self, rhs: usize) -> Self::Output {
         //TODO Downsizing may introduce correctness issue.
@@ -138,7 +141,7 @@ impl ToLeBytes for u32 {
     }
 }
 
-impl ToLeBytes for o16 {
+impl ToLeBytes for Offset {
     fn to_bytes(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
     }
@@ -149,8 +152,8 @@ pub(crate) trait FromLeBytes {
     fn from_bytes(bytes: Vec<u8>) -> Self;
 }
 
-impl FromLeBytes for o16 {
-    fn from_bytes(bytes: Vec<u8>) -> o16 {
+impl FromLeBytes for Offset {
+    fn from_bytes(bytes: Vec<u8>) -> Offset {
         OffsetType(u16::from_le_bytes(bytes.try_into().unwrap()))
     }
 }

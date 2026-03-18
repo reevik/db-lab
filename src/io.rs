@@ -1,5 +1,5 @@
 use crate::paging::{Page, PAGE_SIZE, PAGE_SIZE_USIZE};
-use crate::types::o16;
+use crate::types::Offset;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs;
@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
 // in-memory cache which holds page ids to Page objects.
-static CACHE: Lazy<Mutex<HashMap<o16, Arc<Mutex<Page>>>>> =
+static CACHE: Lazy<Mutex<HashMap<Offset, Arc<Mutex<Page>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn write(page: &Page) {
@@ -27,7 +27,7 @@ pub(crate) fn write(page: &Page) {
 }
 
 pub(crate) fn read(page_id: usize) -> Option<Arc<Mutex<Page>>> {
-    let id = o16(page_id as u16);
+    let id = Offset(page_id as u16);
     let cache = CACHE.lock().unwrap();
     cache.get(&id).cloned().or_else(|| read_from_disk(page_id))
 }
