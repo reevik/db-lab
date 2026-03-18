@@ -341,7 +341,7 @@ impl Page {
         );
         let slot_offset_usize: usize = slot_offset.try_into()?;
         let payload_type_offset = slot_offset_usize + S_DATA_LENGTH;
-        let payload_type =
+        let _ =
             Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
         let key_len_offset = payload_type_offset + S_DATA_TYPE;
         let key_len = Self::read_le::<Offset, S_DATA_LENGTH>(

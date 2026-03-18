@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 static CACHE: Lazy<Mutex<HashMap<Offset, Arc<Mutex<Page>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+const INDEX_FILE: &str = "index.000";
+
 pub(crate) fn write(page: &Page) {
     let page_id: usize = page.page_id().try_into().unwrap();
     let page_size: usize = PAGE_SIZE.try_into().unwrap();
@@ -18,7 +20,7 @@ pub(crate) fn write(page: &Page) {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
-        .open("index.000")
+        .open(INDEX_FILE)
         .unwrap();
     let _ = file.seek(SeekFrom::Start(file_offset.try_into().unwrap()));
     let _ = file.write_all(page.buffer());
@@ -38,7 +40,7 @@ fn read_from_disk(page_id: usize) -> Option<Arc<Mutex<Page>>> {
         .read(true)
         .write(true)
         .create(true)
-        .open("index.000")
+        .open(INDEX_FILE)
         .unwrap();
     file.seek(SeekFrom::Start(file_offset as u64)).unwrap();
     let mut buffer = [0u8; PAGE_SIZE_USIZE];
