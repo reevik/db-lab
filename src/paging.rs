@@ -69,6 +69,10 @@ const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + S_RIGHT_SIBLING;
 const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + S_PARENT_PAGE_ID;
 const OFFSET_FREE_END: usize = OFFSET_FREE_START + S_FREE_START;
 
+/// Error constants
+const READ_ERR: &str = "Failed to read page.";
+const O_ERR: &str = "Value exceeds offset type's size.";
+
 #[derive(Clone, Copy)]
 pub struct Page {
     buffer: [u8; PAGE_SIZE_USIZE],
@@ -100,8 +104,8 @@ impl Page {
         new_instance.set_left_sibling(ZERO);
         new_instance.set_parent(ZERO);
         new_instance.set_num_of_slots(ZERO);
-        new_instance.set_free_start(TOTAL_HEADER_SIZE.try_into().expect("Too many pages"));
-        new_instance.set_free_end(PAGE_SIZE.try_into().expect(""));
+        new_instance.set_free_start(TOTAL_HEADER_SIZE.try_into().expect(O_ERR));
+        new_instance.set_free_end(PAGE_SIZE.try_into().expect(O_ERR));
         new_instance.set_page_type(page_type);
         new_instance.set_page_id(page_id);
         new_instance
@@ -268,11 +272,11 @@ impl Page {
         let max_available_payload_size: usize = self
             .max_available_payload_size_in_overflow_page()
             .try_into()
-            .expect("Too many pages");
+            .expect(O_ERR);
         let copy_size = min(payload.len(), max_available_payload_size);
         let mut payload_in_bytes: Vec<u8> = vec![0; copy_size];
         let _ = payload.read(&mut payload_in_bytes);
-        let payload_size: Offset = copy_size.try_into().expect("Too many pages");
+        let payload_size: Offset = copy_size.try_into().expect(O_ERR);
         let mut slot: Vec<u8> = Vec::with_capacity(copy_size);
         let next_page_id = if payload.len() > 0 {
             next_page()
@@ -296,7 +300,7 @@ impl Page {
     fn slot_size(key_len: usize, payload_len: usize) -> Offset {
         (SINGLE_SLOT_HEADER_SIZE + key_len + payload_len)
             .try_into()
-            .expect("Too many pages")
+            .expect(O_ERR)
     }
 
     // new_free_end is the new position of the free_end after inserting a new slot at the end of the
@@ -406,7 +410,7 @@ impl Page {
         let free_end = self.free_end();
         let new_free_end = free_end - slot.len();
         // update the buffer with key-payload.
-        self.buffer[new_free_end.try_into().expect("")..free_end.try_into()?]
+        self.buffer[new_free_end.try_into().expect(O_ERR)..free_end.try_into()?]
             .copy_from_slice(&slot);
         self.set_free_end(new_free_end);
         debug_assert!(self.free_start() <= self.free_end());
@@ -726,7 +730,7 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
     let page_id: usize = data_node.try_into()?;
     let second_input = random_string(page_size * 2);
     add_to_page(page_id, "bar".to_string(), second_input.clone());
-    let leading_page = io::read(page_id).expect("failed to read page");
+    let leading_page = io::read(page_id).expect(READ_ERR);
     {
         let guard = leading_page.lock().unwrap();
         let num_of_slots: usize = guard.num_of_slots().try_into()?;
@@ -740,7 +744,7 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
 }
 
 fn add_to_page(page_id: usize, key: String, second_input: String) {
-    let leading_page = io::read(page_id).expect("failed to read page");
+    let leading_page = io::read(page_id).expect(READ_ERR);
     {
         let mut mutex = leading_page.lock().unwrap();
         let _ = mutex
@@ -796,10 +800,10 @@ fn verify_max_fan_out() {
         add_to_page(data_node_id, random_key, input_value.clone());
     }
 
-    let page = io::read(data_node_id).expect("failed to read page");
+    let page = io::read(data_node_id).expect(READ_ERR);
     {
         let mutex = page.lock().unwrap();
-        let free_size: usize = mutex.free_size().try_into().expect("");
+        let free_size: usize = mutex.free_size().try_into().expect(O_ERR);
         assert_eq!(free_size, 0)
     }
 }
@@ -817,7 +821,7 @@ fn verify_next_page_id() {
 #[serial]
 fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
     delete_index();
-    let page_size: usize = PAGE_SIZE.try_into().expect("");
+    let page_size: usize = PAGE_SIZE.try_into().expect(O_ERR);
     let input_value = random_string(page_size * 2);
     assert!(input_value.len() > page_size);
     let data_node_id = Page::new_leaf(
@@ -833,10 +837,10 @@ fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
         add_to_page(data_node_id, random_key, input_value.clone());
     }
 
-    let page = io::read(data_node_id).expect("failed to read page");
+    let page = io::read(data_node_id).expect(READ_ERR);
     {
         let mutex = page.lock().unwrap();
-        let free_size: usize = mutex.free_size().try_into().expect("");
+        let free_size: usize = mutex.free_size().try_into().expect(O_ERR);
         assert_eq!(free_size, 0)
     }
 }
