@@ -12,7 +12,6 @@ use std::io::Read;
 use serial_test::serial;
 
 const ZERO: Offset = Offset(0);
-static mut NEXT_PAGE_ID: Offset = Offset(0);
 pub(crate) const PAGE_SIZE: Offset = Offset(8172);
 pub(crate) const PAGE_SIZE_USIZE: usize = PAGE_SIZE.0 as usize;
 
