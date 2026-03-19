@@ -6,10 +6,10 @@ use crate::types::PayloadType::Str;
 use crate::types::{FromLeBytes, Key, Offset, Payload, PayloadType, ToLeBytes};
 use alloc::vec::Vec;
 use rand::Rng;
+use serial_test::serial;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Read;
-use serial_test::serial;
 
 const ZERO: Offset = Offset(0);
 pub(crate) const PAGE_SIZE: Offset = Offset(8172);
@@ -151,6 +151,19 @@ impl Page {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    fn delete_key(&mut self, key: Key) -> Result<(), InvalidPageOffsetError> {
+        let num_of_slots = self.num_of_slots().try_into()?;
+        for i in 0..num_of_slots {
+            if let Ok(current_key) = self.key_at(i)
+                && key.to_str() == current_key
+            {
+                self.delete_slot(i);
+                break
+            }
+        }
+        Ok(())
     }
 
     // Adds data into a leaf node.
@@ -303,6 +316,61 @@ impl Page {
             .expect(O_ERR)
     }
 
+    fn delete_slot(&mut self, index: usize) -> Result<(), InvalidPageOffsetError> {
+        let (start, end) = self.get_slot_boundaries(index)?;
+        let slot_len = end -start;
+        let free_end: usize = self.free_end().try_into()?;
+        if free_end < start {
+            // move the entire slot block on the left by the deleted slot length, if there is a slot
+            // on the left.
+            let new_free_end = free_end + slot_len;
+            self.buffer.copy_within(start..end, new_free_end);
+            //TODO overflow handling.
+            self.set_free_end(Offset(new_free_end as u16));
+        }
+        let buffer = vec![0u8; end - start];
+        self.buffer[free_end..free_end + slot_len].copy_from_slice(&buffer);
+        let num_of_slots = self.num_of_slots();
+        self.set_num_of_slots(num_of_slots - 1);
+        Ok(())
+    }
+
+    fn update_slot_table_item(&mut self, index: usize, offset: Offset) {
+        let slot_item_offset = TOTAL_HEADER_SIZE + index * S_SLOT_TABLE_ITEM;
+        let start: usize = slot_item_offset;
+        let end: usize = start + S_SLOT_TABLE_ITEM;
+        let new_offset_value = &offset.to_bytes();
+        self.buffer[start..end].copy_from_slice(new_offset_value);
+    }
+
+    fn get_slot_boundaries(&self, index: usize) -> Result<(usize, usize), InvalidPageOffsetError> {
+        let slot_offset_in_table = TOTAL_HEADER_SIZE + index * S_SLOT_TABLE_ITEM;
+        let slot_offset = Self::read_le::<Offset, S_OFFSET>(
+            &self.buffer,
+            slot_offset_in_table,
+            Offset::from_bytes,
+        );
+
+        let payload_len = Self::read_le::<Offset, S_DATA_LENGTH>(
+            &self.buffer,
+            slot_offset.try_into()?,
+            Offset::from_bytes,
+        );
+
+        let slot_offset_usize: usize = slot_offset.try_into()?;
+        let payload_type_offset = slot_offset_usize + S_DATA_LENGTH;
+        let key_len_offset = payload_type_offset + S_DATA_TYPE;
+        let key_len = Self::read_le::<Offset, S_DATA_LENGTH>(
+            &self.buffer,
+            key_len_offset,
+            Offset::from_bytes,
+        );
+
+        let total_slot_size =Self::slot_size(key_len.try_into()?, payload_len.try_into()?);
+        let end = slot_offset + total_slot_size;
+        Ok((slot_offset_usize, end.try_into()?))
+    }
+
     // new_free_end is the new position of the free_end after inserting a new slot at the end of the
     // page. The slots make the page grow backward:
     // | Page Header | slot table | ... free space ... | new slot | prev slot | .. |
@@ -345,8 +413,7 @@ impl Page {
         );
         let slot_offset_usize: usize = slot_offset.try_into()?;
         let payload_type_offset = slot_offset_usize + S_DATA_LENGTH;
-        let _ =
-            Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
+        let _ = Self::read_le::<u8, S_DATA_TYPE>(&self.buffer, payload_type_offset, u8::from_bytes);
         let key_len_offset = payload_type_offset + S_DATA_TYPE;
         let key_len = Self::read_le::<Offset, S_DATA_LENGTH>(
             &self.buffer,
