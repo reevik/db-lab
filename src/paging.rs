@@ -989,7 +989,7 @@ fn verify_slot_boundaries() {
 
 #[test]
 #[serial]
-fn verify_deletion() {
+fn verify_tail_deletion() {
     delete_index();
     let mut page = Page::new_inner();
     let payload1 = Payload::from_str("123".to_string());
@@ -999,17 +999,70 @@ fn verify_deletion() {
     let _ = page.add_key_ref(Key::from_str("b".to_string()), payload2.clone());
     let _ = page.add_key_ref(Key::from_str("c".to_string()), payload3.clone());
     assert_eq!(Offset(3), page.num_of_slots());
+    let result_payload_1 = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(Some("123".to_string()), result_payload_1);
 
+    let available_space_before_deletion = page.free_end() - page.free_start();
+    let _ = page.delete_key(Key::from_str("c".to_string()));
+    let available_space_after_deletion = page.free_end() - page.free_start();
+    assert!(available_space_before_deletion < available_space_after_deletion);
+    assert_eq!(Offset(2), page.num_of_slots());
+    let result_payload_for_a = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(Some("123".to_string()), result_payload_for_a);
+    let result_payload_for_b = page.get_for_key(Key::from_str("b".to_string())).unwrap();
+    assert_eq!(Some("234".to_string()), result_payload_for_b);
+    let result_payload_for_c = page.get_for_key(Key::from_str("c".to_string())).unwrap();
+    assert_eq!(None, result_payload_for_c);
+}
+
+#[test]
+#[serial]
+fn verify_intermediary_deletion() {
+    delete_index();
+    let mut page = Page::new_inner();
+    let payload1 = Payload::from_str("123".to_string());
+    let payload2 = Payload::from_str("234".to_string());
+    let payload3 = Payload::from_str("456".to_string());
+    let _ = page.add_key_ref(Key::from_str("a".to_string()), payload1.clone());
+    let _ = page.add_key_ref(Key::from_str("b".to_string()), payload2.clone());
+    let _ = page.add_key_ref(Key::from_str("c".to_string()), payload3.clone());
+    assert_eq!(Offset(3), page.num_of_slots());
+    let result_payload_1 = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(Some("123".to_string()), result_payload_1);
+
+    let available_space_before_deletion = page.free_end() - page.free_start();
+    let _ = page.delete_key(Key::from_str("b".to_string()));
+    let available_space_after_deletion = page.free_end() - page.free_start();
+    assert!(available_space_before_deletion < available_space_after_deletion);
+    assert_eq!(Offset(2), page.num_of_slots());
+    let result_payload_for_a = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(Some("123".to_string()), result_payload_for_a);
+    let result_payload_for_b = page.get_for_key(Key::from_str("b".to_string())).unwrap();
+    assert_eq!(None, result_payload_for_b);
+    let result_payload_for_c = page.get_for_key(Key::from_str("c".to_string())).unwrap();
+    assert_eq!(Some("456".to_string()), result_payload_for_c);
+}
+
+#[test]
+#[serial]
+fn verify_head_deletion() {
+    delete_index();
+    let mut page = Page::new_inner();
+    let payload1 = Payload::from_str("123".to_string());
+    let payload2 = Payload::from_str("234".to_string());
+    let payload3 = Payload::from_str("456".to_string());
+    let _ = page.add_key_ref(Key::from_str("a".to_string()), payload1.clone());
+    let _ = page.add_key_ref(Key::from_str("b".to_string()), payload2.clone());
+    let _ = page.add_key_ref(Key::from_str("c".to_string()), payload3.clone());
+    assert_eq!(Offset(3), page.num_of_slots());
     let result_payload_1 = page.get_for_key(Key::from_str("a".to_string())).unwrap();
     assert_eq!(Some("123".to_string()), result_payload_1);
 
     let available_space_before_deletion = page.free_end() - page.free_start();
     let _ = page.delete_key(Key::from_str("a".to_string()));
-
     let available_space_after_deletion = page.free_end() - page.free_start();
     assert!(available_space_before_deletion < available_space_after_deletion);
     assert_eq!(Offset(2), page.num_of_slots());
-
     let result_payload_for_a = page.get_for_key(Key::from_str("a".to_string())).unwrap();
     assert_eq!(None, result_payload_for_a);
     let result_payload_for_b = page.get_for_key(Key::from_str("b".to_string())).unwrap();
