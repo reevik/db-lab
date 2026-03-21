@@ -159,8 +159,9 @@ impl Page {
             if let Ok(current_key) = self.key_at(i)
                 && key.to_str() == current_key
             {
-                self.delete_slot(i);
-                break
+                let _ = self.delete_slot(i);
+                io::write(&self);
+                break;
             }
         }
         Ok(())
@@ -318,20 +319,42 @@ impl Page {
 
     fn delete_slot(&mut self, index: usize) -> Result<(), InvalidPageOffsetError> {
         let (start, end) = self.get_slot_boundaries(index)?;
-        let slot_len = end -start;
+        let slot_len = end - start;
         let free_end: usize = self.free_end().try_into()?;
         if free_end < start {
+            let num_of_slots: usize = self.num_of_slots().try_into()?;
             // move the entire slot block on the left by the deleted slot length, if there is a slot
             // on the left.
             let new_free_end = free_end + slot_len;
-            self.buffer.copy_within(start..end, new_free_end);
+            self.buffer.copy_within(free_end..start, new_free_end);
             //TODO overflow handling.
-            self.set_free_end(Offset(new_free_end as u16));
+            self.set_free_end(Offset::from_usize(new_free_end));
+            for i in index + 1..num_of_slots {
+                self.shift_right_offset_value_in_slot_table_item(i, Offset::from_usize(slot_len));
+            }
         }
-        let buffer = vec![0u8; end - start];
-        self.buffer[free_end..free_end + slot_len].copy_from_slice(&buffer);
+
+        {
+            let buffer = vec![0u8; end - start];
+            self.buffer[free_end..free_end + slot_len].copy_from_slice(&buffer);
+        }
+
+        let slot_item_start = TOTAL_HEADER_SIZE + index * S_SLOT_TABLE_ITEM;
+        let slot_item_end = slot_item_start + S_SLOT_TABLE_ITEM;
+        let end_of_table: usize = self.free_start().try_into()?;
+        if index < self.num_of_slots().get() - 1 {
+            let new_position = slot_item_start;
+            self.buffer.copy_within(slot_item_end..end_of_table, new_position);
+        }
+
+        {
+            let buffer = vec![0u8; S_SLOT_TABLE_ITEM];
+            self.buffer[end_of_table - S_SLOT_TABLE_ITEM..end_of_table].copy_from_slice(&buffer);
+        }
+
         let num_of_slots = self.num_of_slots();
         self.set_num_of_slots(num_of_slots - 1);
+        self.set_free_start(Offset::from_usize(end_of_table - S_SLOT_TABLE_ITEM));
         Ok(())
     }
 
@@ -342,6 +365,21 @@ impl Page {
         let new_offset_value = &offset.to_bytes();
         self.buffer[start..end].copy_from_slice(new_offset_value);
     }
+
+    fn shift_right_offset_value_in_slot_table_item(&mut self, index: usize, amount: Offset) {
+        let slot_item_offset = TOTAL_HEADER_SIZE + index * S_SLOT_TABLE_ITEM;
+        let slot_offset = Self::read_le::<Offset, S_OFFSET>(
+            &self.buffer,
+            slot_item_offset,
+            Offset::from_bytes,
+        );
+        let new_offset_value = slot_offset + amount;
+        let start: usize = slot_item_offset;
+        let end: usize = start + S_SLOT_TABLE_ITEM;
+        let new_offset_value = &new_offset_value.to_bytes();
+        self.buffer[start..end].copy_from_slice(new_offset_value);
+    }
+
 
     fn get_slot_boundaries(&self, index: usize) -> Result<(usize, usize), InvalidPageOffsetError> {
         let slot_offset_in_table = TOTAL_HEADER_SIZE + index * S_SLOT_TABLE_ITEM;
@@ -366,7 +404,7 @@ impl Page {
             Offset::from_bytes,
         );
 
-        let total_slot_size =Self::slot_size(key_len.try_into()?, payload_len.try_into()?);
+        let total_slot_size = Self::slot_size(key_len.try_into()?, payload_len.try_into()?);
         let end = slot_offset + total_slot_size;
         Ok((slot_offset_usize, end.try_into()?))
     }
@@ -387,7 +425,7 @@ impl Page {
         Ok(())
     }
 
-    fn get_for_key(&self, key: Key) -> Result<String, InvalidPageOffsetError> {
+    fn get_for_key(&self, key: Key) -> Result<Option<String>, InvalidPageOffsetError> {
         let num_of_slots = self.num_of_slots().try_into()?;
         for i in 0..num_of_slots {
             if let Ok(current_key) = self.key_at(i)
@@ -395,10 +433,13 @@ impl Page {
             {
                 let i_offset = i.try_into()?;
                 let found = self.get_key_payload(i_offset);
-                return found;
+                return match found {
+                    Ok(a) => { Ok(Some(a)) }
+                    Err(e) => { Err(e) }
+                }
             }
         }
-        Ok("".to_string())
+        Ok(None)
     }
 
     fn get_key_payload(&self, index: Offset) -> Result<String, InvalidPageOffsetError> {
@@ -804,7 +845,7 @@ fn verify_add_second_payload_larger_than_available_size() -> Result<(), InvalidP
         assert_eq!(num_of_slots, 2);
         let bar_value = guard.get_for_key(Key::from_str("bar".to_string()));
         if let Ok(a) = bar_value {
-            assert_eq!(second_input.clone(), a);
+            assert_eq!(Some(second_input.clone()), a);
         }
     }
     Ok(())
@@ -910,6 +951,71 @@ fn verify_no_space_left_in_head_after_inserting_overflowed_pages() {
         let free_size: usize = mutex.free_size().try_into().expect(O_ERR);
         assert_eq!(free_size, 0)
     }
+}
+
+#[test]
+#[serial]
+fn verify_slot_boundaries() {
+    delete_index();
+    let mut page = Page::new_inner();
+    let payload1 = Payload::from_str("123".to_string());
+    let payload2 = Payload::from_str("234".to_string());
+    let key1 = Key::from_str("a".to_string());
+    let key2 = Key::from_str("b".to_string());
+    let _ = page.add_key_ref(key1.clone(), payload1.clone());
+    let _ = page.add_key_ref(key2.clone(), payload2.clone());
+    assert_eq!(Offset(2), page.num_of_slots());
+    match page.get_for_key(Key::from_str("a".to_string())) {
+        Ok(key_value) => { assert_eq!(Some("123".to_string()), key_value); },
+        Err(_) => { assert!(false) }
+    }
+    {
+        let (start, end) = match page.get_slot_boundaries(0) {
+            Ok(slot_boundaries) => (slot_boundaries.0, slot_boundaries.1),
+            Err(_) => { assert!(false); return }
+        };
+        assert_eq!(Offset::from_usize(start), PAGE_SIZE - Page::slot_size(key1.len(), payload1.len()));
+        assert_eq!(Offset::from_usize(end), PAGE_SIZE);
+    }
+    {
+        let (start, end) = match page.get_slot_boundaries(1) {
+            Ok(slot_boundaries) => (slot_boundaries.0, slot_boundaries.1),
+            Err(_) => { assert!(false); return }
+        };
+        assert_eq!(Offset::from_usize(start), page.free_end());
+        assert_eq!(Offset::from_usize(end), page.free_end() + Page::slot_size(key2.len(), payload2.len()));
+    }
+}
+
+#[test]
+#[serial]
+fn verify_deletion() {
+    delete_index();
+    let mut page = Page::new_inner();
+    let payload1 = Payload::from_str("123".to_string());
+    let payload2 = Payload::from_str("234".to_string());
+    let payload3 = Payload::from_str("456".to_string());
+    let _ = page.add_key_ref(Key::from_str("a".to_string()), payload1.clone());
+    let _ = page.add_key_ref(Key::from_str("b".to_string()), payload2.clone());
+    let _ = page.add_key_ref(Key::from_str("c".to_string()), payload3.clone());
+    assert_eq!(Offset(3), page.num_of_slots());
+
+    let result_payload_1 = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(Some("123".to_string()), result_payload_1);
+
+    let available_space_before_deletion = page.free_end() - page.free_start();
+    let _ = page.delete_key(Key::from_str("a".to_string()));
+
+    let available_space_after_deletion = page.free_end() - page.free_start();
+    assert!(available_space_before_deletion < available_space_after_deletion);
+    assert_eq!(Offset(2), page.num_of_slots());
+
+    let result_payload_for_a = page.get_for_key(Key::from_str("a".to_string())).unwrap();
+    assert_eq!(None, result_payload_for_a);
+    let result_payload_for_b = page.get_for_key(Key::from_str("b".to_string())).unwrap();
+    assert_eq!(Some("234".to_string()), result_payload_for_b);
+    let result_payload_for_c = page.get_for_key(Key::from_str("c".to_string())).unwrap();
+    assert_eq!(Some("456".to_string()), result_payload_for_c);
 }
 
 fn random_string(len: usize) -> String {
