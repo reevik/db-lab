@@ -24,6 +24,7 @@ pub(crate) fn write(page: &Page) {
         .unwrap();
     let _ = file.seek(SeekFrom::Start(file_offset.try_into().unwrap()));
     let _ = file.write_all(page.buffer());
+    file.flush().unwrap();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.insert(page.page_id(), Arc::new(Mutex::new(page.clone())));
 }

@@ -16,6 +16,12 @@ impl OffsetType<u16> {
     pub(crate) fn from_u16(i: u16) -> Self {
         OffsetType(i)
     }
+
+    pub(crate) fn from_usize(value: usize) -> Self {
+        let offset: Offset = value.try_into().unwrap();
+        offset
+    }
+
     pub(crate) fn size() -> usize {
         size_of::<Self>()
     }
