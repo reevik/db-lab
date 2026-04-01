@@ -1,4 +1,4 @@
-Teleport DB
+DB Lab
 ----
 
 An experimental B-tree based nosql database. Its purpose is solely educational and to verify some ideas. Feel free to use for your own purpose and contribute.

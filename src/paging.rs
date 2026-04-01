@@ -69,6 +69,7 @@ const OFFSET_PARENT_PAGE_ID: usize = OFFSET_RIGHT_SIBLING + S_RIGHT_SIBLING;
 const OFFSET_FREE_START: usize = OFFSET_PARENT_PAGE_ID + S_PARENT_PAGE_ID;
 const OFFSET_FREE_END: usize = OFFSET_FREE_START + S_FREE_START;
 
+const F_DELETED: u8 = 9u8;
 /// Error constants
 const READ_ERR: &str = "Failed to read page.";
 const O_ERR: &str = "Value exceeds offset type's size.";
@@ -317,6 +318,10 @@ impl Page {
             .expect(O_ERR)
     }
 
+    pub(crate) fn is_marked_deleted(&self) -> bool {
+        self.flags() == F_DELETED
+    }
+
     fn delete_slot(&mut self, index: usize) -> Result<(), InvalidPageOffsetError> {
         let (start, end) = self.get_slot_boundaries(index)?;
         let slot_len = end - start;
@@ -431,8 +436,7 @@ impl Page {
             if let Ok(current_key) = self.key_at(i)
                 && key.to_str() == current_key
             {
-                let i_offset = i.try_into()?;
-                let found = self.get_key_payload(i_offset);
+                let found = self.payload_at(i);
                 return match found {
                     Ok(a) => { Ok(Some(a)) }
                     Err(e) => { Err(e) }
@@ -442,8 +446,8 @@ impl Page {
         Ok(None)
     }
 
-    fn get_key_payload(&self, index: Offset) -> Result<String, InvalidPageOffsetError> {
-        let index_usize: usize = index.try_into()?;
+    fn payload_at(&self, index: usize) -> Result<String, InvalidPageOffsetError> {
+        let index_usize: usize = index;
         let offset_index = TOTAL_HEADER_SIZE + (index_usize * S_SLOT_TABLE_ITEM);
         let slot_offset =
             Self::read_le::<Offset, S_OFFSET>(&self.buffer, offset_index, Offset::from_bytes);
@@ -710,6 +714,22 @@ impl Page {
 
         Ok(Self::stringify(key_value))
     }
+
+    pub(crate) fn mark_deleted(&mut self) {
+        self.set_flags(F_DELETED)
+    }
+
+    pub(crate) fn merge_into(&mut self, target_page: &mut Page) -> Result<(), InvalidPageOffsetError> {
+        let num_of_slots: usize = self.num_of_slots().get();
+        for i in 0..num_of_slots {
+            let key = self.key_at(i)?;
+            let payload = self.payload_at(i)?;
+            let _ = target_page.add(Key::from_str(key), Payload::from_str(payload));
+            self.mark_deleted();
+            io::write(self)
+        }
+        Ok(())
+    }
 }
 
 #[test]
@@ -760,14 +780,14 @@ fn verify_read_the_inserted() {
     let payload2 = Payload::from_str("234".to_string());
     let _ = new_inner.add_key_ref(Key::from_str("abcdefh".to_string()), payload1);
     let _ = new_inner.add_key_ref(Key::from_str("xyz".to_string()), payload2);
-    match new_inner.get_key_payload(ZERO) {
+    match new_inner.payload_at(0) {
         Ok(payload) => {
             assert_eq!(payload, "123");
         }
         Err(_) => assert!(false),
     }
 
-    match new_inner.get_key_payload(Offset(1)) {
+    match new_inner.payload_at(1) {
         Ok(payload) => {
             assert_eq!(payload, "234");
         }
@@ -876,10 +896,10 @@ fn verify_add_payload_larger_than_available_size() -> Result<(), InvalidPageOffs
 
     let page = io::read(data_node.0 as usize);
     // we read the first item in the list.
-    let record_index = ZERO;
+    let record_index = 0;
     if let Some(leading_page) = page {
         let mutex = leading_page.lock().unwrap();
-        if let Ok(payload) = mutex.get_key_payload(record_index) {
+        if let Ok(payload) = mutex.payload_at(record_index) {
             assert_eq!(input_value, payload)
         }
     } else {
@@ -1069,6 +1089,34 @@ fn verify_head_deletion() {
     assert_eq!(Some("234".to_string()), result_payload_for_b);
     let result_payload_for_c = page.get_for_key(Key::from_str("c".to_string())).unwrap();
     assert_eq!(Some("456".to_string()), result_payload_for_c);
+}
+
+#[test]
+#[serial]
+fn merge_two_space_with_enough_space() {
+    delete_index();
+    let mut page1 = Page::new_inner();
+    let mut page2 = Page::new_inner();
+    let payload1 = Payload::from_str("123".to_string());
+    let payload2 = Payload::from_str("234".to_string());
+    let payload3 = Payload::from_str("456".to_string());
+    let key1 = Key::from_str("a".to_string());
+    let key2 = Key::from_str("b".to_string());
+    let key3 = Key::from_str("c".to_string());
+    let _ = page1.add_key_ref(key1.clone(), payload1.clone());
+    let _ = page1.add_key_ref(key2.clone(), payload2.clone());
+    let _ = page2.add_key_ref(key3.clone(), payload3.clone());
+    assert_eq!(Offset(2), page1.num_of_slots());
+    assert_eq!(Offset(1), page2.num_of_slots());
+    page1.merge_into(&mut page2).unwrap();
+    let result1 = page2.get_for_key(key1.clone()).unwrap();
+    let result2 = page2.get_for_key(key2.clone()).unwrap();
+    let result3 = page2.get_for_key(key3.clone()).unwrap();
+    assert_eq!(Some("123".to_string()), result1);
+    assert_eq!(Some("234".to_string()), result2);
+    assert_eq!(Some("456".to_string()), result3);
+    assert_eq!(page1.is_marked_deleted(), true);
+    assert_eq!(page2.is_marked_deleted(), false);
 }
 
 fn random_string(len: usize) -> String {
