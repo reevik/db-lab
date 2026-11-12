@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.webp" alt="dblab logo" width="600">
+</p>
+
 DB Lab
 ----
 
