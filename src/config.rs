@@ -43,6 +43,6 @@ fn read_from_disk(offset: u64, buffer: &mut [u8]) -> &[u8] {
     }
 
     file.seek(SeekFrom::Start(offset)).unwrap();
-    file.read(buffer).unwrap();
+    file.read_exact(buffer).unwrap();
     buffer
 }

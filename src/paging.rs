@@ -124,7 +124,7 @@ impl Page {
     pub fn add(&mut self, key: Key, payload: Payload) -> Result<Offset, InvalidPageOffsetError> {
         let head_page = self;
         let current_page_id = head_page.page_id();
-        let mut current_page = head_page;
+        let current_page = head_page;
         let payload_and_page_id = current_page.add_key_data(key, payload)?;
         let mut residual = payload_and_page_id.0;
         let mut page_id = payload_and_page_id.1;
@@ -730,6 +730,21 @@ impl Page {
         }
         Ok(())
     }
+
+    pub(crate) fn split(&self, index: usize) -> Option<Self> {
+        let num_of_item: usize = self.num_of_slots().try_into().unwrap();
+        if index > 0 && index < num_of_item - 1 {
+            let mut page = Page::new(self.page_type());
+            for i in (index..num_of_item).rev() {
+                let key = self.key_at(i).ok()?;
+                let payload = self.payload_at(i).ok()?;
+                page.add(Key::from_str(key), Payload::from_str(payload));
+            }
+            return Some(page)
+
+        }
+        None
+    }
 }
 
 #[test]
@@ -1093,7 +1108,7 @@ fn verify_head_deletion() {
 
 #[test]
 #[serial]
-fn merge_two_space_with_enough_space() {
+fn merge_two_pages_with_enough_space() {
     delete_index();
     let mut page1 = Page::new_inner();
     let mut page2 = Page::new_inner();

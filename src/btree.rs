@@ -1,7 +1,3 @@
-use std::sync::Arc;
-use crate::io;
-use crate::paging::Page;
-
 const FAN_OUT: u8 = 1 << 3;
 
 struct Index {
