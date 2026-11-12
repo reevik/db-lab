@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="dblab logo" width="300">
+  <img src="assets/logo.webp" alt="dblab logo" width="600">
 </p>
 
 DB Lab
